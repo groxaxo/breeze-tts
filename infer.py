@@ -38,6 +38,18 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cfg-scale", type=float, default=DEFAULT_CFG_SCALE)
     parser.add_argument(
+        "--nf4",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Load text encoder + backbone Linear layers as bitsandbytes NF4.",
+    )
+    parser.add_argument(
+        "--nf4-include-depth-decoder",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also quantize the depth decoder (more VRAM saved, more quality risk).",
+    )
+    parser.add_argument(
         "--fast-all", action=argparse.BooleanOptionalAction, default=None
     )
     parser.add_argument(
@@ -67,10 +79,32 @@ def main() -> None:
     if args.ref_audio is not None and not args.ref_audio.is_file():
         raise FileNotFoundError(f"Reference audio not found: {args.ref_audio}")
 
+    if args.nf4 and (
+        args.fast_all
+        or args.fast_text_encoder
+        or args.fast_backbone_prefill
+        or args.fast_backbone_decode
+        or args.fast_depth_decoder
+        or args.fast_codec
+    ):
+        print(
+            "nf4: CUDA-graph fast path is disabled; bitsandbytes Linear4bit "
+            "is not compatible with captured graphs.",
+            flush=True,
+        )
+        args.fast_all = False
+        args.fast_text_encoder = False
+        args.fast_backbone_prefill = False
+        args.fast_backbone_decode = False
+        args.fast_depth_decoder = False
+        args.fast_codec = False
+
     tokenizer, model, audio_tokenizer = load_runtime(
         args.model,
         device=resolve_device(),
         attn_implementation="eager",
+        nf4=args.nf4,
+        nf4_include_depth_decoder=args.nf4_include_depth_decoder,
     )
     update_generation_config_for_breeze(model)
 

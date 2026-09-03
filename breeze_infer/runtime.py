@@ -70,8 +70,9 @@ def load_runtime(
     *,
     device: str,
     attn_implementation: str,
+    nf4: bool = False,
+    nf4_include_depth_decoder: bool = False,
 ) -> tuple[AutoTokenizer, BreezeForConditionalGeneration, Any]:
-
     if device.startswith("cuda"):
         try:
             torch.cuda.set_device(device)
@@ -88,7 +89,23 @@ def load_runtime(
         ckpt_dir,
         dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
+        low_cpu_mem_usage=True,
     )
+
+    if nf4:
+        from breeze_infer.nf4 import apply_nf4
+
+        stats = apply_nf4(
+            model,
+            include_depth_decoder=nf4_include_depth_decoder,
+        )
+        print(
+            "nf4: "
+            f"replaced={stats.replaced} skipped={stats.skipped} "
+            f"include_depth_decoder={nf4_include_depth_decoder}",
+            flush=True,
+        )
+
     model.to(device).eval()
 
     from qwen_tts import Qwen3TTSTokenizer
