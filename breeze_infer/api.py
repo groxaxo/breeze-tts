@@ -49,6 +49,8 @@ class ApiSettings:
     fast_backbone_decode: bool
     fast_depth_decoder: bool
     fast_codec: bool
+    nf4: bool
+    nf4_include_depth_decoder: bool
 
 
 _settings: ApiSettings | None = None
@@ -129,18 +131,46 @@ def _load_app(app: FastAPI, settings: ApiSettings) -> None:
         settings.model,
         device=resolve_device(),
         attn_implementation="eager",
+        nf4=settings.nf4,
+        nf4_include_depth_decoder=settings.nf4_include_depth_decoder,
     )
     update_generation_config_for_breeze(model)
+
+    fast_all = settings.fast_all
+    fast_text_encoder = settings.fast_text_encoder
+    fast_backbone_prefill = settings.fast_backbone_prefill
+    fast_backbone_decode = settings.fast_backbone_decode
+    fast_depth_decoder = settings.fast_depth_decoder
+    fast_codec = settings.fast_codec
+    if settings.nf4 and (
+        fast_all
+        or fast_text_encoder
+        or fast_backbone_prefill
+        or fast_backbone_decode
+        or fast_depth_decoder
+        or fast_codec
+    ):
+        print(
+            "nf4: CUDA-graph fast path is disabled; bitsandbytes Linear4bit "
+            "is not compatible with captured graphs.",
+            flush=True,
+        )
+        fast_all = False
+        fast_text_encoder = False
+        fast_backbone_prefill = False
+        fast_backbone_decode = False
+        fast_depth_decoder = False
+        fast_codec = False
 
     config = FastStreamingConfig(
         max_new_tokens=MAX_NEW_TOKENS,
         max_seq_len=MAX_SEQ_LEN,
-        fast_all=settings.fast_all,
-        fast_text_encoder=settings.fast_text_encoder,
-        fast_backbone_prefill=settings.fast_backbone_prefill,
-        fast_backbone_decode=settings.fast_backbone_decode,
-        fast_depth_decoder=settings.fast_depth_decoder,
-        fast_codec=settings.fast_codec,
+        fast_all=fast_all,
+        fast_text_encoder=fast_text_encoder,
+        fast_backbone_prefill=fast_backbone_prefill,
+        fast_backbone_decode=fast_backbone_decode,
+        fast_depth_decoder=fast_depth_decoder,
+        fast_codec=fast_codec,
         repetition_penalty=REPETITION_PENALTY,
     )
     runtime = FastBreezeStreamingRuntime(
@@ -156,6 +186,7 @@ def _load_app(app: FastAPI, settings: ApiSettings) -> None:
     app.state.model = model
     app.state.audio_tokenizer = audio_tokenizer
     app.state.runtime = runtime
+    app.state.nf4 = settings.nf4
 
 
 @asynccontextmanager
@@ -173,7 +204,13 @@ app = FastAPI(title="Breeze TTS API", lifespan=_lifespan)
 def health() -> JSONResponse:
     if not hasattr(app.state, "runtime"):
         return JSONResponse({"status": "loading"}, status_code=503)
-    return JSONResponse({"status": "ok", "sample_rate": app.state.runtime.sample_rate})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "sample_rate": app.state.runtime.sample_rate,
+            "nf4": bool(getattr(app.state, "nf4", False)),
+        }
+    )
 
 
 @app.post("/v1/audio/speech")
@@ -272,6 +309,17 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument(
+        "--nf4",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Load text encoder + backbone Linear layers as bitsandbytes NF4.",
+    )
+    parser.add_argument(
+        "--nf4-include-depth-decoder",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
         "--fast-all", action=argparse.BooleanOptionalAction, default=None
     )
     parser.add_argument(
@@ -300,6 +348,8 @@ def main() -> None:
         fast_backbone_decode=args.fast_backbone_decode,
         fast_depth_decoder=args.fast_depth_decoder,
         fast_codec=args.fast_codec,
+        nf4=args.nf4,
+        nf4_include_depth_decoder=args.nf4_include_depth_decoder,
     )
 
     import uvicorn
